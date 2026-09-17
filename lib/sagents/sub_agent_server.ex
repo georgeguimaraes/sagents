@@ -383,6 +383,11 @@ defmodule Sagents.SubAgentServer do
     {:ok, server_state}
   end
 
+  # `execute/1` and `resume/2` carry the caller's OpenTelemetry context. The
+  # caller is the parent's tool execution, blocked on this call, so attaching its
+  # context here nests the sub-agent's spans under the parent's `execute_tool`
+  # span in the same trace. The server outlives any one call, so its own context
+  # is restored afterwards and a later `resume/2` parents under its own caller.
   @impl true
   def handle_call({:with_otel_context, nil, request}, from, server_state) do
     handle_call(request, from, server_state)
@@ -783,6 +788,8 @@ defmodule Sagents.SubAgentServer do
     end
   end
 
+  # Returns nil when `opentelemetry_api` is not loaded. `apply/3` keeps
+  # `OpenTelemetry.Ctx` from being a compile-time dependency.
   defp capture_otel_context do
     if Code.ensure_loaded?(OpenTelemetry.Ctx) do
       apply(OpenTelemetry.Ctx, :get_current, [])

@@ -18,13 +18,8 @@ defmodule Sagents.SubAgentServerContextTest do
 
   setup_all do
     Mimic.copy(LLMChain)
-    Application.put_env(:opentelemetry, :traces_exporter, :none)
     {:ok, _apps} = Application.ensure_all_started(:opentelemetry)
-
-    on_exit(fn ->
-      Application.stop(:opentelemetry)
-      Application.delete_env(:opentelemetry, :traces_exporter)
-    end)
+    on_exit(fn -> Application.stop(:opentelemetry) end)
 
     :ok
   end
