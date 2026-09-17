@@ -22,14 +22,19 @@ defmodule Sagents.Modes.AgentExecution do
   response satisfies `until_tool` rather than ending the run with
   `exceeded_max_runs`.
 
-  ## Resuming a retained chain
+  ## Resuming after human approval
 
-  `Sagents.SubAgent.resume/3` executes the approved tool calls on the chain it
-  kept from the interrupted run, so that chain arrives with a run count above
-  zero and tool results the pipeline has not yet seen. Those results pass
-  through steps 6 and 7, plus the tool-interrupt check, before the loop starts.
-  Their state updates reach the chain's state, a nested interrupt surfaces, and
-  an approved target tool completes the run even when the budget is spent.
+  A resume executes approved tool calls outside this pipeline, then hands the
+  mode a chain whose last message is that tool message.
+  `Sagents.SubAgent.resume/3` does this on the chain it kept from the
+  interrupted run. `Sagents.Middleware.HumanInTheLoop` does it for
+  `Sagents.Agent.resume/4`, which builds a fresh chain with a fresh budget.
+
+  A chain that arrives ending in a tool message has its results pass through
+  steps 6 and 7, plus the tool-interrupt check, before the loop starts. Their
+  state updates reach the chain's state, a nested interrupt surfaces, and an
+  approved target tool completes the run without another LLM call, even when
+  the budget is spent.
 
   ## Tool results that expand into messages
 
@@ -50,11 +55,10 @@ defmodule Sagents.Modes.AgentExecution do
     that interrupted or satisfied an `until_tool` contract ends without
     expanding anything into it.
 
-  Running at the top of the loop also covers the results a resume produces:
-  `Sagents.Middleware.HumanInTheLoop` executes approved tool calls outside this
-  pipeline and hands `Sagents.Agent.execute/3` a fresh chain whose last message
-  is that tool message. Step 2 is the first thing to see it, so a tool gated
-  behind human approval expands on the same terms as one that is not.
+  Running at the top of the loop also covers the results a resume produces.
+  When those results do not end the run, step 2 is the next thing to see them,
+  so a tool gated behind human approval expands on the same terms as one that
+  is not.
 
   ## Options
 
@@ -99,6 +103,7 @@ defmodule Sagents.Modes.AgentExecution do
   import Sagents.Mode.Steps
 
   alias LangChain.Chains.LLMChain
+  alias LangChain.Message
 
   @impl true
   def run(%LLMChain{} = chain, opts) do
@@ -148,16 +153,19 @@ defmodule Sagents.Modes.AgentExecution do
   defp normalize_tool_names(name) when is_binary(name), do: [name]
   defp normalize_tool_names(names) when is_list(names), do: names
 
-  defp maybe_process_resumed_tool_results({:continue, chain} = pipeline_result, opts) do
-    if get_run_count(chain) > 0 do
-      pipeline_result
-      |> propagate_state(opts)
-      |> check_tool_interrupts(opts)
-      |> maybe_check_until_tool(opts)
-    else
-      pipeline_result
-    end
+  # A chain that arrives ending in a tool message carries results no pass of
+  # the loop has checked: tool calls a resume executed outside this pipeline.
+  defp maybe_process_resumed_tool_results(
+         {:continue, %LLMChain{last_message: %Message{role: :tool}}} = pipeline_result,
+         opts
+       ) do
+    pipeline_result
+    |> propagate_state(opts)
+    |> check_tool_interrupts(opts)
+    |> maybe_check_until_tool(opts)
   end
+
+  defp maybe_process_resumed_tool_results(pipeline_result, _opts), do: pipeline_result
 
   defp continue_execution({:continue, chain}, opts), do: do_run(chain, opts)
   defp continue_execution(terminal, _opts), do: terminal
