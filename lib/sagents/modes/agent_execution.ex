@@ -7,12 +7,54 @@ defmodule Sagents.Modes.AgentExecution do
 
   ## Pipeline
 
-  1. Call the LLM
-  2. Check for HITL interrupts (if HumanInTheLoop middleware present)
-  3. Execute tools
-  4. Propagate state updates from tool results
-  5. Check if target tool was called (if `until_tool` is set)
-  6. Loop if `needs_response` is true, or error if until_tool contract violated
+  1. Check the `:max_runs` budget before starting another LLM call
+  2. Expand any tool result from the previous turn that asked to arrive as
+     messages
+  3. Call the LLM
+  4. Check for HITL interrupts (if HumanInTheLoop middleware present)
+  5. Execute tools
+  6. Propagate state updates from tool results
+  7. Check if target tool was called (if `until_tool` is set)
+  8. Loop if `needs_response` is true, or error if until_tool contract violated
+
+  The budget is checked before a call, never after one, so the tools from the
+  final permitted response still execute. A target tool returned on that
+  response satisfies `until_tool` rather than ending the run with
+  `exceeded_max_runs`.
+
+  ## Resuming a retained chain
+
+  `Sagents.SubAgent.resume/3` executes the approved tool calls on the chain it
+  kept from the interrupted run, so that chain arrives with a run count above
+  zero and tool results the pipeline has not yet seen. Those results pass
+  through steps 6 and 7, plus the tool-interrupt check, before the loop starts.
+  Their state updates reach the chain's state, a nested interrupt surfaces, and
+  an approved target tool completes the run even when the budget is spent.
+
+  ## Tool results that expand into messages
+
+  A tool can return material as *messages* rather than as tool-result content,
+  choosing the role it arrives at, and have the model read them on its very next
+  LLM call. A tool asks for that with `LangChain.MessageExpansion.expand/3`;
+  step 2 applies it.
+
+  Step 2 comes at the top of the loop, not the bottom, and both halves of that
+  matter:
+
+  - **Before the LLM call**, which is the guarantee the tool is relying on. A
+    tool that says "this arrives next" while the model keeps working in the same
+    run is making a promise nothing keeps, and a model handed a description of
+    material it does not have will write the material itself.
+  - **After the loop boundary**, so every step that decides whether the run is
+    over reads a `last_message` the model produced or the tools returned. A turn
+    that interrupted or satisfied an `until_tool` contract ends without
+    expanding anything into it.
+
+  Running at the top of the loop also covers the results a resume produces:
+  `Sagents.Middleware.HumanInTheLoop` executes approved tool calls outside this
+  pipeline and hands `Sagents.Agent.execute/3` a fresh chain whose last message
+  is that tool message. Step 2 is the first thing to see it, so a tool gated
+  behind human approval expands on the same terms as one that is not.
 
   ## Options
 
@@ -72,6 +114,7 @@ defmodule Sagents.Modes.AgentExecution do
   defp do_run(chain, opts) do
     {:continue, chain}
     |> check_max_runs(Keyword.put_new(opts, :max_runs, 50))
+    |> expand_tool_results(opts)
     |> call_llm()
     |> check_pause(opts)
     |> check_pre_tool_hitl(opts)

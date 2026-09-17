@@ -1,5 +1,64 @@
 # Changelog
 
+## v0.14.2
+
+A tool can now deliver material as conversation messages, and the model reads
+them on its very next LLM call in the same run.
+
+No breaking changes, but this release requires LangChain v0.14.1 or later.
+
+### Upgrading from v0.14.1 - v0.14.2
+
+Upgrade `langchain` to v0.14.1 or later alongside `sagents`:
+
+```
+mix deps.update langchain sagents
+```
+
+### Added
+
+- **Tool results that expand into messages.** A tool that returns
+  `LangChain.MessageExpansion.expand/3` has its result expanded into messages
+  (at the roles it chooses) before the next LLM call, and its tool result is
+  trimmed to the short `result_content`. The expansion runs as the first step of
+  `Sagents.Modes.AgentExecution`, so tools approved through `HumanInTheLoop`
+  expand on resume just like ungated tools. A turn that interrupts or satisfies
+  an `until_tool` contract ends without expanding. Expanded messages are saved in
+  `Sagents.State` but fire no `:on_message_processed` callback, so they produce
+  no transcript rows.
+  [#189](https://github.com/sagents-ai/sagents/pull/189)
+- Docs and a `@spec` for `Sagents.Subscriber.subscribe_to_agent/4`.
+  [#186](https://github.com/sagents-ai/sagents/pull/186)
+
+## v0.14.1
+
+A newly started agent is now reachable by every caller by the time
+`Sagents.AgentsDynamicSupervisor.start_agent_sync/1` reports it ready.
+
+No breaking changes and no migration.
+
+### Fixed
+
+- **`start_agent_sync/1` could report an agent ready before callers could reach
+  it.** Its readiness wait polled the `AgentSupervisor`'s registration rather
+  than the `AgentServer`'s, and the two are made at different points in startup:
+  a supervisor registers before its own `init/1` runs, while its `AgentServer`
+  child registers only once that `init/1` has loaded persisted state. A caller
+  acting on the premature success got `:agent_not_running` from its very next
+  call, leaving the fresh agent idle until its inactivity timeout. Most visible
+  under the `:horde` backend, where the two registrations reach another node at
+  different times.
+  [#184](https://github.com/sagents-ai/sagents/pull/184)
+
+### Changed
+
+- `start_agent_sync/1` now waits on the `AgentServer` itself, so the wait spans
+  the persisted-state load. A start that exceeds `:startup_timeout` (default
+  5000ms) returns `{:error, :timeout_waiting_for_agent}` where it previously
+  returned success and failed downstream. The success and error shapes are
+  unchanged.
+  [#184](https://github.com/sagents-ai/sagents/pull/184)
+
 ## v0.14.0
 
 A subscriber process that switches between conversations now hands back the
